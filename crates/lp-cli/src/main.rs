@@ -37,6 +37,7 @@ const FEE_CONFIG_SEED: [u8; 32] = [
 const PUMP_IDL: &str = include_str!("../../../idls/pump.json");
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 const BUNDLE_WALLETS: usize = 5;
+const BUNDLE_BUY_SOL: f64 = 0.15;
 
 #[derive(Parser)]
 #[command(about = "LaunchProof devnet CLI")]
@@ -173,6 +174,7 @@ fn read_pubkey(data: &[u8], at: usize) -> Pubkey {
 struct Curve {
     virtual_token: u64,
     virtual_quote: u64,
+    real_token: u64,
     complete: bool,
     creator: Pubkey,
 }
@@ -187,6 +189,7 @@ fn read_curve(rpc: &RpcClient, mint: &Pubkey) -> Result<Curve> {
     Ok(Curve {
         virtual_token: read_u64(&data, 8),
         virtual_quote: read_u64(&data, 16),
+        real_token: read_u64(&data, 24),
         complete: data[48] != 0,
         creator: read_pubkey(&data, 49),
     })
@@ -263,7 +266,8 @@ fn buy_ixs(rpc: &RpcClient, mint: &Pubkey, user: &Pubkey, sol_in: u64) -> Result
     let net = u128::from(sol_in) * 97 / 100;
     let (vt, vq) = (u128::from(curve.virtual_token), u128::from(curve.virtual_quote));
     let tokens_out = vt - (vq * vt) / (vq + net);
-    let tokens_out = u64::try_from(tokens_out)?;
+    // Never ask for more than the curve still holds (devnet curves are small).
+    let tokens_out = u64::try_from(tokens_out)?.min(curve.real_token / 100 * 95);
     if tokens_out == 0 {
         bail!("purchase too small");
     }
@@ -349,25 +353,6 @@ fn init_config(rpc: &RpcClient, payer: &Keypair, attester: &Pubkey) -> Result<()
     Ok(())
 }
 
-fn wait_for(rpc: &RpcClient, sigs: &[String]) -> Result<()> {
-    for sig in sigs {
-        let parsed = sig.parse()?;
-        let mut ok = false;
-        for _ in 0..60 {
-            if let Some(status) = rpc.get_signature_status(&parsed)? {
-                status.map_err(|e| anyhow!("{sig} failed: {e:?}"))?;
-                ok = true;
-                break;
-            }
-            sleep(Duration::from_millis(500));
-        }
-        if !ok {
-            bail!("{sig} not confirmed in time");
-        }
-    }
-    Ok(())
-}
-
 fn launch(rpc: &RpcClient, payer: &Keypair, kind: LaunchKind) -> Result<()> {
     let mint = Keypair::new();
     let mint_key = mint.pubkey();
@@ -403,22 +388,19 @@ fn launch(rpc: &RpcClient, payer: &Keypair, kind: LaunchKind) -> Result<()> {
     record["create_tx"] = json!(submit(rpc, "create_v2", &[create], payer, &[&mint])?);
 
     let creator_sol = match kind {
-        LaunchKind::Clean => 0.1,
-        LaunchKind::Bundled => 0.3,
+        LaunchKind::Clean => 0.01,
+        LaunchKind::Bundled => 0.1,
     };
     let ixs = buy_ixs(rpc, &mint_key, &creator, lamports(creator_sol))?;
     record["creator_buy_tx"] = json!(submit(rpc, "creator buy", &ixs, payer, &[])?);
 
     if !wallets.is_empty() {
-        // Send all bundle buys back to back so they land in the first slots after creation.
+        // Buy one after another right after creation; each buy reads the fresh curve price.
         let mut sigs = Vec::new();
-        for wlt in &wallets {
-            let ixs = buy_ixs(rpc, &mint_key, &wlt.pubkey(), lamports(1.0))?;
-            let tx = transaction(rpc, &ixs, wlt, &[])?;
-            sigs.push(rpc.send_transaction(&tx)?.to_string());
+        for (i, wlt) in wallets.iter().enumerate() {
+            let ixs = buy_ixs(rpc, &mint_key, &wlt.pubkey(), lamports(BUNDLE_BUY_SOL))?;
+            sigs.push(submit(rpc, &format!("bundle buy {}", i + 1), &ixs, wlt, &[])?);
         }
-        wait_for(rpc, &sigs)?;
-        println!("bundle buys: {sigs:?}");
         record["bundle_wallets"] = json!(wallets.iter().map(|k| k.pubkey().to_string()).collect::<Vec<_>>());
         record["bundle_buy_txs"] = json!(sigs);
     }
