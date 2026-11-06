@@ -1,0 +1,19 @@
+[package]
+name = "lp-tx"
+version = "0.1.0"
+description = "Pump.fun and LaunchProof guard instruction builders shared by the CLI, API and MCP server"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anchor-lang = "1.2.0"
+anyhow = "1"
+launchproof = { path = "../../programs/launchproof", features = ["no-entrypoint"] }
+lp-attest = { path = "../lp-attest" }
+serde_json = "1"
+solana-instruction = "3"
+solana-keypair = "3"
+solana-rpc-client = "3"
+solana-sdk-ids = "3"
+solana-signer = "3"

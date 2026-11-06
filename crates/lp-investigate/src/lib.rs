@@ -525,3 +525,50 @@ mod tests {
         assert_eq!(d["OLD"], -50);
     }
 }
+
+/// Rebuilds the attestation from a report previously serialized to JSON (cache).
+pub fn attestation_from_report_json(value: &Value, network: u8, issued_at: i64) -> Result<Attestation> {
+    #[derive(serde::Deserialize)]
+    struct Cached {
+        mint: String,
+        linked_initial_bps: u16,
+        linked_now_bps: u16,
+        creator_prior_launches: Vec<String>,
+        creator_dead_launches: Vec<String>,
+        mint_authority_active: bool,
+        freeze_authority_active: bool,
+        partial_reasons: Vec<String>,
+        evidence_hash: String,
+    }
+    let c: Cached = serde_json::from_value(value.clone())?;
+    if c.evidence_hash.len() != 64 {
+        bail!("evidence hash must be 64 hex characters");
+    }
+    let mut evidence_hash = [0u8; 32];
+    for (i, byte) in evidence_hash.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&c.evidence_hash[2 * i..2 * i + 2], 16)?;
+    }
+    let mint: [u8; 32] = bs58::decode(&c.mint).into_vec()?.try_into().map_err(|_| anyhow!("mint is not 32 bytes"))?;
+    let mut f = 0;
+    if c.mint_authority_active {
+        f |= flags::MINT_AUTHORITY_ACTIVE;
+    }
+    if c.freeze_authority_active {
+        f |= flags::FREEZE_AUTHORITY_ACTIVE;
+    }
+    if !c.partial_reasons.is_empty() {
+        f |= flags::ANALYSIS_PARTIAL;
+    }
+    let clamp = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
+    Ok(Attestation {
+        network,
+        mint,
+        linked_initial_bps: c.linked_initial_bps,
+        linked_now_bps: c.linked_now_bps,
+        creator_prior: clamp(c.creator_prior_launches.len()),
+        creator_dead: clamp(c.creator_dead_launches.len()),
+        flags: f,
+        issued_at,
+        evidence_hash,
+    })
+}

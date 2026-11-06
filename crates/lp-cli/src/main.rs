@@ -12,6 +12,7 @@ use anchor_lang::{InstructionData, ToAccountMetas};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use launchproof::PolicyArgs;
+use lp_tx::{buy_ixs, config_address, create_v2_ix, lamports, pda, pk, w, PUMP};
 use lp_attest::{build_ed25519_instruction_data, network, Attestation};
 use serde_json::{json, Value};
 use solana_commitment_config::CommitmentConfig;
@@ -22,20 +23,6 @@ use solana_rpc_client_api::config::RpcSendTransactionConfig;
 use solana_signer::Signer;
 use solana_transaction::Transaction;
 
-const PUMP: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
-const PUMP_FEES: &str = "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ";
-const MAYHEM: &str = "MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e";
-const TOKEN_2022: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
-const ATA_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
-/// One of the fee recipients that buys must append (docs/BREAKING_FEE_RECIPIENT.md).
-const EXTRA_FEE_RECIPIENT: &str = "5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD";
-/// Second seed of the fee_config PDA, taken from idls/pump.json.
-const FEE_CONFIG_SEED: [u8; 32] = [
-    0x01, 0x56, 0xe0, 0xf6, 0x93, 0x66, 0x5a, 0xcf, 0x44, 0xdb, 0x15, 0x68, 0xbf, 0x17, 0x5b, 0xaa,
-    0x51, 0x89, 0xcb, 0x97, 0xf5, 0xd2, 0xff, 0x3b, 0x65, 0x5d, 0x2b, 0xb6, 0xfd, 0x6d, 0x18, 0xb0,
-];
-const PUMP_IDL: &str = include_str!("../../../idls/pump.json");
-const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 const BUNDLE_WALLETS: usize = 5;
 const BUNDLE_BUY_SOL: f64 = 0.15;
 
@@ -124,196 +111,12 @@ enum Command {
     },
 }
 
-fn pk(s: &str) -> Pubkey {
-    Pubkey::from_str(s).expect("valid constant address")
-}
-
-fn pda(seeds: &[&[u8]], program: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(seeds, program).0
-}
-
-/// Token-2022 associated token account (Pump.fun create_v2 coins use Token-2022).
-fn ata(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
-    pda(&[owner.as_ref(), pk(TOKEN_2022).as_ref(), mint.as_ref()], &pk(ATA_PROGRAM))
-}
-
-fn w(key: Pubkey) -> AccountMeta {
-    AccountMeta::new(key, false)
-}
-
-fn r(key: Pubkey) -> AccountMeta {
-    AccountMeta::new_readonly(key, false)
-}
-
-fn lamports(sol: f64) -> u64 {
-    (sol * LAMPORTS_PER_SOL).round() as u64
-}
-
 fn home_path(rel: &str) -> PathBuf {
     PathBuf::from(std::env::var("HOME").expect("HOME is set")).join(rel)
 }
 
 fn load_keypair(path: &PathBuf) -> Result<Keypair> {
     read_keypair_file(path).map_err(|e| anyhow!("cannot read keypair {}: {e}", path.display()))
-}
-
-fn discriminator(name: &str) -> Result<Vec<u8>> {
-    let idl: Value = serde_json::from_str(PUMP_IDL)?;
-    let ix = idl["instructions"]
-        .as_array()
-        .and_then(|list| list.iter().find(|i| i["name"] == name))
-        .ok_or_else(|| anyhow!("instruction {name} not in idls/pump.json"))?;
-    ix["discriminator"]
-        .as_array()
-        .ok_or_else(|| anyhow!("{name} has no discriminator"))?
-        .iter()
-        .map(|b| b.as_u64().map(|v| v as u8).ok_or_else(|| anyhow!("bad discriminator byte")))
-        .collect()
-}
-
-fn put_str(buf: &mut Vec<u8>, s: &str) {
-    buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
-    buf.extend_from_slice(s.as_bytes());
-}
-
-fn read_u64(data: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes(data[at..at + 8].try_into().expect("8 bytes"))
-}
-
-fn read_pubkey(data: &[u8], at: usize) -> Pubkey {
-    Pubkey::new_from_array(data[at..at + 32].try_into().expect("32 bytes"))
-}
-
-struct Curve {
-    virtual_token: u64,
-    virtual_quote: u64,
-    real_token: u64,
-    complete: bool,
-    creator: Pubkey,
-}
-
-/// BondingCurve layout from idls/pump.json, after the 8-byte discriminator.
-fn read_curve(rpc: &RpcClient, mint: &Pubkey) -> Result<Curve> {
-    let address = pda(&[b"bonding-curve", mint.as_ref()], &pk(PUMP));
-    let data = rpc.get_account_data(&address).context("bonding curve not found")?;
-    if data.len() < 81 {
-        bail!("bonding curve account too small");
-    }
-    Ok(Curve {
-        virtual_token: read_u64(&data, 8),
-        virtual_quote: read_u64(&data, 16),
-        real_token: read_u64(&data, 24),
-        complete: data[48] != 0,
-        creator: read_pubkey(&data, 49),
-    })
-}
-
-/// Global.fee_recipient: discriminator(8) + initialized(1) + authority(32).
-fn read_fee_recipient(rpc: &RpcClient) -> Result<Pubkey> {
-    let data = rpc.get_account_data(&pda(&[b"global"], &pk(PUMP)))?;
-    if data.len() < 73 {
-        bail!("pump global account too small");
-    }
-    Ok(read_pubkey(&data, 41))
-}
-
-fn create_v2_ix(mint: &Pubkey, user: &Pubkey, name: &str, symbol: &str, uri: &str) -> Result<Instruction> {
-    let (pump, mayhem) = (pk(PUMP), pk(MAYHEM));
-    let bonding_curve = pda(&[b"bonding-curve", mint.as_ref()], &pump);
-    let sol_vault = pda(&[b"sol-vault"], &mayhem);
-    let mut data = discriminator("create_v2")?;
-    put_str(&mut data, name);
-    put_str(&mut data, symbol);
-    put_str(&mut data, uri);
-    data.extend_from_slice(user.as_ref()); // creator
-    data.push(0); // is_mayhem_mode = false; trailing optional args omitted
-    Ok(Instruction {
-        program_id: pump,
-        accounts: vec![
-            AccountMeta::new(*mint, true),
-            r(pda(&[b"mint-authority"], &pump)),
-            w(bonding_curve),
-            w(ata(&bonding_curve, mint)),
-            r(pda(&[b"global"], &pump)),
-            AccountMeta::new(*user, true),
-            r(solana_sdk_ids::system_program::ID),
-            r(pk(TOKEN_2022)),
-            r(pk(ATA_PROGRAM)),
-            w(mayhem),
-            r(pda(&[b"global-params"], &mayhem)),
-            w(sol_vault),
-            w(pda(&[b"mayhem-state", mint.as_ref()], &mayhem)),
-            w(ata(&sol_vault, mint)),
-            r(pda(&[b"__event_authority"], &pump)),
-            r(pump),
-        ],
-        data,
-    })
-}
-
-/// Idempotent creation of the buyer's Token-2022 associated token account.
-fn create_ata_ix(payer: &Pubkey, owner: &Pubkey, mint: &Pubkey) -> Instruction {
-    Instruction {
-        program_id: pk(ATA_PROGRAM),
-        accounts: vec![
-            AccountMeta::new(*payer, true),
-            w(ata(owner, mint)),
-            r(*owner),
-            r(*mint),
-            r(solana_sdk_ids::system_program::ID),
-            r(pk(TOKEN_2022)),
-        ],
-        data: vec![1],
-    }
-}
-
-/// Pump.fun `buy` spending at most `sol_in` lamports. 16 IDL accounts plus
-/// bonding-curve-v2 and one extra fee recipient (18 total).
-fn buy_ixs(rpc: &RpcClient, mint: &Pubkey, user: &Pubkey, sol_in: u64) -> Result<Vec<Instruction>> {
-    let (pump, fees) = (pk(PUMP), pk(PUMP_FEES));
-    let curve = read_curve(rpc, mint)?;
-    if curve.complete {
-        bail!("bonding curve is complete; token has migrated");
-    }
-    // Leave 3% of the SOL for fees so max_sol_cost covers the real cost.
-    let net = u128::from(sol_in) * 97 / 100;
-    let (vt, vq) = (u128::from(curve.virtual_token), u128::from(curve.virtual_quote));
-    let tokens_out = vt - (vq * vt) / (vq + net);
-    // Never ask for more than the curve still holds (devnet curves are small).
-    let tokens_out = u64::try_from(tokens_out)?.min(curve.real_token / 100 * 95);
-    if tokens_out == 0 {
-        bail!("purchase too small");
-    }
-
-    let bonding_curve = pda(&[b"bonding-curve", mint.as_ref()], &pump);
-    let mut data = discriminator("buy")?;
-    data.extend_from_slice(&tokens_out.to_le_bytes());
-    data.extend_from_slice(&sol_in.to_le_bytes()); // max_sol_cost
-    let buy = Instruction {
-        program_id: pump,
-        accounts: vec![
-            r(pda(&[b"global"], &pump)),
-            w(read_fee_recipient(rpc)?),
-            r(*mint),
-            w(bonding_curve),
-            w(ata(&bonding_curve, mint)),
-            w(ata(user, mint)),
-            AccountMeta::new(*user, true),
-            r(solana_sdk_ids::system_program::ID),
-            r(pk(TOKEN_2022)),
-            w(pda(&[b"creator-vault", curve.creator.as_ref()], &pump)),
-            r(pda(&[b"__event_authority"], &pump)),
-            r(pump),
-            r(pda(&[b"global_volume_accumulator"], &pump)),
-            w(pda(&[b"user_volume_accumulator", user.as_ref()], &pump)),
-            r(pda(&[b"fee_config", &FEE_CONFIG_SEED], &fees)),
-            r(fees),
-            w(pda(&[b"bonding-curve-v2", mint.as_ref()], &pump)),
-            w(pk(EXTRA_FEE_RECIPIENT)),
-        ],
-        data,
-    };
-    Ok(vec![create_ata_ix(user, user, mint), buy])
 }
 
 fn transaction(rpc: &RpcClient, ixs: &[Instruction], payer: &Keypair, extra: &[&Keypair]) -> Result<Transaction> {
@@ -336,10 +139,6 @@ fn submit(rpc: &RpcClient, label: &str, ixs: &[Instruction], payer: &Keypair, ex
     let sig = rpc.send_and_confirm_transaction(&tx)?.to_string();
     println!("{label}: {sig}");
     Ok(sig)
-}
-
-fn config_address() -> Pubkey {
-    pda(&[b"config"], &launchproof::ID)
 }
 
 fn init_config(rpc: &RpcClient, payer: &Keypair, attester: &Pubkey) -> Result<()> {

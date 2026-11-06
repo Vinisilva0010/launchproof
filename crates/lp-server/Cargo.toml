@@ -1,0 +1,29 @@
+[package]
+name = "lp-server"
+version = "0.1.0"
+description = "LaunchProof HTTP API: investigations, signed attestations and guarded purchase transactions"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anchor-lang = "1.2.0"
+anyhow = "1"
+axum = "0.8"
+base64 = "0.22"
+bincode = "1"
+dotenvy = "0.15"
+launchproof = { path = "../../programs/launchproof", features = ["no-entrypoint"] }
+lp-attest = { path = "../lp-attest" }
+lp-investigate = { path = "../lp-investigate" }
+lp-tx = { path = "../lp-tx" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+solana-commitment-config = "3"
+solana-keypair = "3"
+solana-rpc-client = "3"
+solana-signer = "3"
+solana-transaction = "3"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "migrate", "macros"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+tower-http = { version = "0.6", features = ["cors"] }
