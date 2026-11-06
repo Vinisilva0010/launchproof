@@ -1731,6 +1731,7 @@ dependencies = [
  "clap",
  "launchproof",
  "lp-attest",
+ "lp-investigate",
  "serde_json",
  "solana-commitment-config",
  "solana-instruction 3.5.1",
@@ -1740,6 +1741,20 @@ dependencies = [
  "solana-sdk-ids",
  "solana-signer",
  "solana-transaction",
+]
+
+[[package]]
+name = "lp-investigate"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bs58",
+ "lp-attest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "solana-rpc-client",
+ "solana-rpc-client-api",
 ]
 
 [[package]]

@@ -12,6 +12,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 launchproof = { path = "../../programs/launchproof", features = ["no-entrypoint"] }
 lp-attest = { path = "../lp-attest" }
+lp-investigate = { path = "../lp-investigate" }
 serde_json = "1"
 solana-commitment-config = "3"
 solana-instruction = "3"

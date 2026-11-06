@@ -78,6 +78,13 @@ enum Command {
         #[arg(value_enum)]
         kind: LaunchKind,
     },
+    /// Investigate a Pump.fun launch and print the risk report as JSON.
+    Investigate {
+        #[arg(long)]
+        mint: Option<String>,
+        #[arg(long, value_enum)]
+        demo: Option<LaunchKind>,
+    },
     /// Buy a token with the on-chain guard: Ed25519 attestation + assert_launch_policy + Pump.fun buy.
     GuardedBuy {
         /// Token mint. Alternatively use --demo.
@@ -88,6 +95,12 @@ enum Command {
         demo: Option<LaunchKind>,
         #[arg(long, default_value_t = 0.05)]
         sol: f64,
+        /// Fill the attestation from a live investigation instead of the manual numbers below.
+        #[arg(long)]
+        auto: bool,
+        /// Buying wallet. Defaults to ~/.config/launchproof/buyer-devnet.json (not the creator).
+        #[arg(long)]
+        buyer: Option<PathBuf>,
         #[arg(long, default_value_t = 0)]
         linked_initial_bps: u16,
         #[arg(long, default_value_t = 0)]
@@ -458,6 +471,29 @@ fn demo_mint(kind: LaunchKind) -> Result<Pubkey> {
     Ok(pk(record["mint"].as_str().ok_or_else(|| anyhow!("no mint in {path}"))?))
 }
 
+fn resolve_mint(mint: Option<String>, demo: Option<LaunchKind>) -> Result<Pubkey> {
+    match (mint, demo) {
+        (Some(m), _) => Ok(Pubkey::from_str(&m)?),
+        (None, Some(kind)) => demo_mint(kind),
+        (None, None) => bail!("pass --mint or --demo"),
+    }
+}
+
+fn run_investigation(rpc: &RpcClient, mint: &Pubkey) -> Result<lp_investigate::Report> {
+    let curve = pda(&[b"bonding-curve", mint.as_ref()], &pk(PUMP));
+    let report = lp_investigate::investigate(rpc, &mint.to_string(), &curve.to_string())?;
+    eprintln!(
+        "investigation: linked wallets {}, bought at launch {:.2}%, holding now {:.2}%, earlier launches {} ({} dead), partial: {:?}",
+        report.linked_wallets.len(),
+        f64::from(report.linked_initial_bps) / 100.0,
+        f64::from(report.linked_now_bps) / 100.0,
+        report.creator_prior_launches.len(),
+        report.creator_dead_launches.len(),
+        report.partial_reasons,
+    );
+    Ok(report)
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let rpc = RpcClient::new_with_commitment(cli.rpc.clone(), CommitmentConfig::confirmed());
@@ -467,29 +503,36 @@ fn main() -> Result<()> {
     match cli.command {
         Command::InitConfig => init_config(&rpc, &payer, &load_keypair(&attester_path)?.pubkey()),
         Command::Launch { kind } => launch(&rpc, &payer, kind),
+        Command::Investigate { mint, demo } => {
+            let mint = resolve_mint(mint, demo)?;
+            let report = run_investigation(&rpc, &mint)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
         Command::GuardedBuy {
-            mint, demo, sol, linked_initial_bps, linked_now_bps, creator_prior, creator_dead, flags,
+            mint, demo, sol, auto, buyer, linked_initial_bps, linked_now_bps, creator_prior, creator_dead, flags,
             max_linked_initial_bps, max_linked_now_bps, max_creator_dead, deny_flags, max_age_secs,
         } => {
-            let mint = match (mint, demo) {
-                (Some(m), _) => Pubkey::from_str(&m)?,
-                (None, Some(kind)) => demo_mint(kind)?,
-                (None, None) => bail!("pass --mint or --demo"),
-            };
+            let mint = resolve_mint(mint, demo)?;
             let issued_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
-            let attestation = Attestation {
-                network: network::DEVNET,
-                mint: mint.to_bytes(),
-                linked_initial_bps,
-                linked_now_bps,
-                creator_prior,
-                creator_dead,
-                flags,
-                issued_at,
-                evidence_hash: [0; 32],
+            let attestation = if auto {
+                run_investigation(&rpc, &mint)?.attestation(network::DEVNET, issued_at)?
+            } else {
+                Attestation {
+                    network: network::DEVNET,
+                    mint: mint.to_bytes(),
+                    linked_initial_bps,
+                    linked_now_bps,
+                    creator_prior,
+                    creator_dead,
+                    flags,
+                    issued_at,
+                    evidence_hash: [0; 32],
+                }
             };
             let policy = PolicyArgs { max_linked_initial_bps, max_linked_now_bps, max_creator_dead, deny_flags, max_age_secs };
-            guarded_buy(&rpc, &payer, &load_keypair(&attester_path)?, mint, sol, attestation, policy)
+            let buyer = load_keypair(&buyer.unwrap_or_else(|| home_path(".config/launchproof/buyer-devnet.json")))?;
+            guarded_buy(&rpc, &buyer, &load_keypair(&attester_path)?, mint, sol, attestation, policy)
         }
     }
 }
