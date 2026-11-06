@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Result};
 use lp_attest::{flags, Attestation, MAX_BPS};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use solana_rpc_client::rpc_client::RpcClient;
@@ -38,7 +38,7 @@ const PAGE: usize = 1000;
 const PUMP: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 const PUMP_IDL: &str = include_str!("../../../idls/pump.json");
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EarlyBuy {
     pub wallet: String,
     pub tokens: u64,
@@ -46,21 +46,21 @@ pub struct EarlyBuy {
     pub slot: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FundingEdge {
     pub from: String,
     pub to: String,
     pub signature: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinkedWallet {
     pub wallet: String,
     /// Empty for the creator itself.
     pub funding_path: Vec<FundingEdge>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Report {
     pub mint: String,
     pub creator: String,
@@ -571,4 +571,224 @@ pub fn attestation_from_report_json(value: &Value, network: u8, issued_at: i64) 
         issued_at,
         evidence_hash,
     })
+}
+
+/// Severity of a finding.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Level {
+    Info,
+    Warning,
+    Danger,
+}
+
+/// One plain-language sentence about a launch, with the on-chain proof behind it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Finding {
+    pub level: Level,
+    pub text: String,
+    /// Transaction signatures that prove the sentence.
+    pub transactions: Vec<String>,
+    /// Account addresses the sentence refers to.
+    pub accounts: Vec<String>,
+}
+
+/// Share bought at launch by linked wallets that is reported as danger.
+pub const DANGER_LINKED_BPS: u16 = 2_000;
+/// Share that is reported as a warning.
+pub const WARNING_BPS: u16 = 1_000;
+/// Dead earlier launches reported as danger.
+pub const DANGER_DEAD_LAUNCHES: usize = 2;
+const MAX_WALLET_FINDINGS: usize = 10;
+
+fn pct(bps: u16) -> String {
+    format!("{:.2}%", f64::from(bps) / 100.0)
+}
+
+impl Report {
+    /// Deterministic explanation built only from the report data.
+    pub fn explain(&self) -> Vec<Finding> {
+        let finding = |level: Level, text: String, transactions: Vec<String>, accounts: Vec<String>| Finding {
+            level,
+            text,
+            transactions,
+            accounts,
+        };
+        let name = |address: &str| {
+            if address == self.creator {
+                "the creator".to_string()
+            } else {
+                address.to_string()
+            }
+        };
+        let mut out = vec![finding(
+            Level::Info,
+            format!("Created by {} in slot {}.", self.creator, self.creation_slot),
+            vec![self.creation_signature.clone()],
+            vec![self.creator.clone()],
+        )];
+
+        let mut bought: BTreeMap<&str, (u64, Vec<String>)> = BTreeMap::new();
+        for b in &self.early_buys {
+            let entry = bought.entry(b.wallet.as_str()).or_default();
+            entry.0 += b.tokens;
+            entry.1.push(b.signature.clone());
+        }
+
+        if let Some((tokens, sigs)) = bought.get(self.creator.as_str()) {
+            let bps = to_bps(*tokens, self.total_supply);
+            let level = if bps >= WARNING_BPS { Level::Warning } else { Level::Info };
+            out.push(finding(level, format!("The creator bought {} of the supply at launch.", pct(bps)), sigs.clone(), vec![self.creator.clone()]));
+        }
+
+        let others: Vec<&LinkedWallet> = self.linked_wallets.iter().filter(|l| l.wallet != self.creator).collect();
+        if others.is_empty() {
+            out.push(finding(
+                Level::Info,
+                "No wallet that bought at launch was funded by the creator or by the creator's funding source.".to_string(),
+                vec![],
+                vec![],
+            ));
+        } else {
+            let level = if self.linked_initial_bps >= DANGER_LINKED_BPS {
+                Level::Danger
+            } else if self.linked_initial_bps >= WARNING_BPS {
+                Level::Warning
+            } else {
+                Level::Info
+            };
+            let accounts = others.iter().map(|l| l.wallet.clone()).collect();
+            let transactions = others.iter().flat_map(|l| l.funding_path.iter().map(|e| e.signature.clone())).collect();
+            out.push(finding(
+                level,
+                format!(
+                    "{} wallets that bought at launch were funded by the creator or by the creator's funding source. Together with the creator they bought {} of the supply.",
+                    others.len(),
+                    pct(self.linked_initial_bps)
+                ),
+                transactions,
+                accounts,
+            ));
+            for l in others.iter().take(MAX_WALLET_FINDINGS) {
+                let (tokens, mut transactions) = bought.get(l.wallet.as_str()).cloned().unwrap_or_default();
+                let chain: Vec<String> = l.funding_path.iter().map(|e| format!("{} received SOL from {}", name(&e.to), name(&e.from))).collect();
+                transactions.extend(l.funding_path.iter().map(|e| e.signature.clone()));
+                out.push(finding(
+                    Level::Warning,
+                    format!(
+                        "Wallet {} bought {} of the supply at launch. {}.",
+                        l.wallet,
+                        pct(to_bps(tokens, self.total_supply)),
+                        chain.join("; ")
+                    ),
+                    transactions,
+                    vec![l.wallet.clone()],
+                ));
+            }
+            if others.len() > MAX_WALLET_FINDINGS {
+                out.push(finding(
+                    Level::Info,
+                    format!("{} more linked wallets are listed in the evidence.", others.len() - MAX_WALLET_FINDINGS),
+                    vec![],
+                    vec![],
+                ));
+            }
+        }
+
+        if self.linked_now_bps > 0 {
+            let level = if self.linked_now_bps >= WARNING_BPS { Level::Warning } else { Level::Info };
+            out.push(finding(
+                level,
+                format!("The creator and linked wallets still hold {} of the supply.", pct(self.linked_now_bps)),
+                vec![],
+                self.linked_wallets.iter().map(|l| l.wallet.clone()).collect(),
+            ));
+        }
+
+        if !self.creator_prior_launches.is_empty() {
+            let dead = self.creator_dead_launches.len();
+            let level = if dead >= DANGER_DEAD_LAUNCHES {
+                Level::Danger
+            } else if dead == 1 {
+                Level::Warning
+            } else {
+                Level::Info
+            };
+            out.push(finding(
+                level,
+                format!(
+                    "The creator launched {} other tokens before this one; {} of them have had no activity for 24 hours.",
+                    self.creator_prior_launches.len(),
+                    dead
+                ),
+                vec![],
+                self.creator_prior_launches.clone(),
+            ));
+        }
+
+        if self.mint_authority_active {
+            out.push(finding(Level::Danger, "The mint authority is still active: more tokens can be created.".to_string(), vec![], vec![self.mint.clone()]));
+        }
+        if self.freeze_authority_active {
+            out.push(finding(Level::Danger, "The freeze authority is active: token accounts can be frozen.".to_string(), vec![], vec![self.mint.clone()]));
+        }
+        for reason in &self.partial_reasons {
+            out.push(finding(Level::Warning, format!("Partial analysis: {reason}."), vec![], vec![]));
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod explain_tests {
+    use super::*;
+
+    fn report(linked: Vec<LinkedWallet>, buys: Vec<EarlyBuy>, linked_bps: u16) -> Report {
+        Report {
+            mint: "MINT".into(),
+            creator: "CREATOR".into(),
+            creation_signature: "CREATE_SIG".into(),
+            creation_slot: 10,
+            total_supply: 1_000,
+            early_buys: buys,
+            linked_wallets: linked,
+            linked_initial_tokens: 0,
+            linked_now_tokens: 0,
+            linked_initial_bps: linked_bps,
+            linked_now_bps: 0,
+            creator_prior_launches: vec![],
+            creator_dead_launches: vec![],
+            mint_authority_active: false,
+            freeze_authority_active: false,
+            partial_reasons: vec![],
+            evidence_hash: String::new(),
+            evidence_hash_bytes: [0; 32],
+        }
+    }
+
+    #[test]
+    fn bundle_is_danger_and_cites_funding_transaction() {
+        let creator = LinkedWallet { wallet: "CREATOR".into(), funding_path: vec![] };
+        let bundle = LinkedWallet {
+            wallet: "W1".into(),
+            funding_path: vec![FundingEdge { from: "CREATOR".into(), to: "W1".into(), signature: "FUND_SIG".into() }],
+        };
+        let buys = vec![EarlyBuy { wallet: "W1".into(), tokens: 300, signature: "BUY_SIG".into(), slot: 11 }];
+        let findings = report(vec![creator, bundle], buys, 3_000).explain();
+        let summary = findings.iter().find(|f| f.text.starts_with("1 wallets")).expect("summary finding");
+        assert_eq!(summary.level, Level::Danger);
+        assert!(summary.transactions.contains(&"FUND_SIG".to_string()));
+        let wallet = findings.iter().find(|f| f.text.starts_with("Wallet W1")).expect("wallet finding");
+        assert!(wallet.text.contains("30.00%"));
+        assert!(wallet.text.contains("W1 received SOL from the creator"));
+        assert!(wallet.transactions.contains(&"BUY_SIG".to_string()));
+    }
+
+    #[test]
+    fn clean_launch_states_no_linked_buyers() {
+        let creator = LinkedWallet { wallet: "CREATOR".into(), funding_path: vec![] };
+        let findings = report(vec![creator], vec![], 0).explain();
+        assert!(findings.iter().any(|f| f.text.starts_with("No wallet that bought at launch")));
+        assert!(findings.iter().all(|f| f.level != Level::Danger));
+    }
 }

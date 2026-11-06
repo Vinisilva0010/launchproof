@@ -176,7 +176,10 @@ async fn investigate(
         _ => return Err(ApiError::bad_request("network must be devnet or mainnet")),
     };
     let mint = parse_pubkey(&mint, "mint")?;
-    Ok(Json(report_json(&state, &network_name, rpc, mint).await?))
+    let mut value = report_json(&state, &network_name, rpc, mint).await?;
+    let report: lp_investigate::Report = serde_json::from_value(value.clone()).map_err(anyhow::Error::from)?;
+    value["findings"] = serde_json::to_value(report.explain()).map_err(anyhow::Error::from)?;
+    Ok(Json(value))
 }
 
 async fn attestation(

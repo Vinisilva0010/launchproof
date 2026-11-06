@@ -305,7 +305,9 @@ fn main() -> Result<()> {
         Command::Investigate { mint, demo } => {
             let mint = resolve_mint(mint, demo)?;
             let report = run_investigation(&rpc, &mint)?;
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            let mut value = serde_json::to_value(&report)?;
+            value["findings"] = serde_json::to_value(report.explain())?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
             Ok(())
         }
         Command::GuardedBuy {
