@@ -3,8 +3,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 API_URL="${LP_API_URL:-http://localhost:8080}"
-CLEAN=$(python3 -c "import json;print(json.load(open('demo-mints.json'))['clean'])")
-BUNDLED=$(python3 -c "import json;print(json.load(open('demo-mints.json'))['bundled'])")
+CLEAN=$(node -p "JSON.parse(require('fs').readFileSync('demo-mints.json','utf8')).clean")
+BUNDLED=$(node -p "JSON.parse(require('fs').readFileSync('demo-mints.json','utf8')).bundled")
 [ -d node_modules ] || npm install --no-audit --no-fund
 rm -rf dist && mkdir -p dist
 npx esbuild src/app.ts --bundle --minify --format=esm --target=es2020 --outfile=dist/app.js \

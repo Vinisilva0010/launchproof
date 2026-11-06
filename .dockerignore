@@ -1,0 +1,9 @@
+target/
+.env
+*.keypair.json
+attester*.json
+web/node_modules/
+web/dist/
+test-ledger/
+.anchor/
+.git/
