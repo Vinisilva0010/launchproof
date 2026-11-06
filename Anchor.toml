@@ -15,6 +15,6 @@ cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
-test = "cargo test -p launchproof-tests"
+test = "scripts/test-program.sh"
 
 [hooks]

@@ -11,7 +11,7 @@ pub enum LaunchProofError {
     InvalidNetwork,
     #[msg("Too many buy programs")]
     TooManyBuyPrograms,
-    #[msg("Buy program list contains a duplicate or the default key")]
+    #[msg("Buy program list contains a duplicate")]
     InvalidBuyProgram,
     #[msg("Verification is paused")]
     Paused,

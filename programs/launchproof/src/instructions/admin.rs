@@ -63,7 +63,6 @@ pub fn handle_set_attester(ctx: Context<AdminOnly>, attester: Pubkey) -> Result<
 pub fn handle_set_buy_programs(ctx: Context<AdminOnly>, programs: Vec<Pubkey>) -> Result<()> {
     require!(programs.len() <= MAX_BUY_PROGRAMS, LaunchProofError::TooManyBuyPrograms);
     for (i, program) in programs.iter().enumerate() {
-        require!(*program != Pubkey::default(), LaunchProofError::InvalidBuyProgram);
         require!(!programs[..i].contains(program), LaunchProofError::InvalidBuyProgram);
     }
     let config = &mut ctx.accounts.config;
