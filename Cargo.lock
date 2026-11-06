@@ -1972,6 +1972,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "lp-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bincode",
+ "reqwest",
+ "serde_json",
+ "solana-commitment-config",
+ "solana-keypair",
+ "solana-rpc-client",
+ "solana-rpc-client-api",
+ "solana-signer",
+ "solana-transaction",
+]
+
+[[package]]
 name = "lp-server"
 version = "0.1.0"
 dependencies = [
