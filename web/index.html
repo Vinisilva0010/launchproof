@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LaunchProof</title>
+  <meta name="description" content="Checks who really bought a Pump.fun token at launch, and lets you buy only if the token stays within your limits.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>LaunchProof</h1>
+    <p class="lead">Checks who really bought a Pump.fun token at launch, and lets you buy only if the token stays within your limits. The check runs inside the purchase transaction on Solana, so a failed check cancels the purchase.</p>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>1. Investigate a token</h2>
+      <form id="investigate-form">
+        <label for="mint">Token address (mint)</label>
+        <input id="mint" name="mint" autocomplete="off" spellcheck="false" required placeholder="Paste a Pump.fun token address">
+        <label for="network">Network</label>
+        <select id="network">
+          <option value="mainnet">Mainnet</option>
+          <option value="devnet">Devnet</option>
+        </select>
+        <div class="row">
+          <button type="submit">Investigate</button>
+          <button type="button" class="secondary" id="demo-clean">Demo: clean launch (devnet)</button>
+          <button type="button" class="secondary" id="demo-bundled">Demo: bundled launch (devnet)</button>
+        </div>
+      </form>
+      <p id="status" role="status"></p>
+    </section>
+
+    <section class="card hidden" id="result">
+      <h2>2. What we found</h2>
+      <div class="stats" id="stats"></div>
+      <ol class="findings" id="findings"></ol>
+    </section>
+
+    <section class="card hidden" id="buy">
+      <h2>3. Buy with the guard (devnet)</h2>
+      <p>Your wallet must be on Solana devnet. The purchase only happens if the token is within the limits below; otherwise the whole transaction is cancelled on-chain.</p>
+      <div class="row">
+        <button type="button" id="connect">Connect wallet</button>
+        <span id="wallet"></span>
+      </div>
+      <div class="grid">
+        <label>Amount (SOL)<input id="sol" type="number" min="0.001" max="5" step="0.001" value="0.01"></label>
+        <label>Max bought at launch by the creator's network (%)<input id="max-initial" type="number" min="0" max="100" step="0.1" value="10"></label>
+        <label>Max still held by the creator's network (%)<input id="max-now" type="number" min="0" max="100" step="0.1" value="10"></label>
+        <label>Max dead earlier launches<input id="max-dead" type="number" min="0" max="100" step="1" value="1"></label>
+      </div>
+      <fieldset>
+        <legend>Refuse the token if</legend>
+        <label class="check"><input type="checkbox" id="deny-mint" checked> the mint authority is active</label>
+        <label class="check"><input type="checkbox" id="deny-freeze" checked> the freeze authority is active</label>
+        <label class="check"><input type="checkbox" id="deny-partial"> the analysis is partial</label>
+      </fieldset>
+      <p id="expected" class="expected"></p>
+      <button type="button" id="buy-button">Buy with guard</button>
+      <p id="buy-status" role="status"></p>
+    </section>
+
+    <section class="card">
+      <h2>How it works</h2>
+      <ol class="how">
+        <li><strong>Investigation.</strong> We read the token's history on Solana: who created it, which wallets bought in the first minute, and where each of those wallets got its SOL. Wallets funded by the creator count as the creator's network.</li>
+        <li><strong>Signed attestation.</strong> The numbers are signed by the LaunchProof key. The signed message also carries a hash of all the evidence, so anyone can check it.</li>
+        <li><strong>Check inside the purchase.</strong> The LaunchProof program on Solana verifies the signature and your limits in the same transaction as the purchase. If anything fails, Solana cancels the purchase.</li>
+      </ol>
+    </section>
+  </main>
+</body>
+<script type="module" src="app.js"></script>
+</html>

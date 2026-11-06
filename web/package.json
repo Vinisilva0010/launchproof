@@ -1,0 +1,14 @@
+{
+  "name": "launchproof-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bash build.sh"
+  },
+  "dependencies": {
+    "@wallet-standard/app": "^1.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}
