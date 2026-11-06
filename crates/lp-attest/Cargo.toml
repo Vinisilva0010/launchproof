@@ -1,0 +1,12 @@
+[package]
+name = "lp-attest"
+version = "0.1.0"
+description = "LaunchProof attestation format, risk policy and Ed25519 instruction parsing"
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
