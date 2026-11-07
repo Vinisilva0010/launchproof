@@ -285,7 +285,11 @@ fn load_attester() -> Result<Keypair> {
         return read_keypair(&mut std::io::Cursor::new(json.into_bytes())).map_err(|e| anyhow!("ATTESTER_KEYPAIR_JSON: {e}"));
     }
     let path = std::env::var("ATTESTER_KEYPAIR_PATH").context("set ATTESTER_KEYPAIR_JSON or ATTESTER_KEYPAIR_PATH")?;
-    read_keypair_file(&path).map_err(|e| anyhow!("cannot read {path}: {e}"))
+    // Values are never printed: a misconfigured variable may hold secret key material.
+    if path.trim_start().starts_with('[') {
+        return Err(anyhow!("ATTESTER_KEYPAIR_PATH contains key bytes; set them in ATTESTER_KEYPAIR_JSON instead"));
+    }
+    read_keypair_file(&path).map_err(|e| anyhow!("cannot read the file named in ATTESTER_KEYPAIR_PATH: {e}"))
 }
 
 #[tokio::main]

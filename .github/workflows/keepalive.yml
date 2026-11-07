@@ -12,4 +12,4 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Ping API
-        run: curl -fsS --retry 5 --retry-delay 20 --max-time 90 "LP_API_URL_PLACEHOLDER/health"
+        run: curl -fsS --retry 5 --retry-delay 20 --max-time 90 "https://launchproof-vd4a.onrender.com/health"
