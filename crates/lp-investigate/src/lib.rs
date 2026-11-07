@@ -274,7 +274,7 @@ impl Ctx<'_> {
     }
 
     fn transaction(&self, signature: &str) -> Result<Value> {
-        let cfg = json!({ "encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "commitment": "confirmed" });
+        let cfg = json!({ "encoding": "jsonParsed", "maxSupportedTransactionVersion": 1, "commitment": "confirmed" });
         let tx = self.call(RpcRequest::GetTransaction, json!([signature, cfg]))?;
         if tx.is_null() {
             bail!("transaction {signature} not found");
