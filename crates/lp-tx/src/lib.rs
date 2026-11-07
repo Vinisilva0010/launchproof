@@ -59,6 +59,19 @@ pub fn bonding_curve(mint: &Pubkey) -> Pubkey {
     pda(&[b"bonding-curve", mint.as_ref()], &pk(PUMP))
 }
 
+pub const METAPLEX: &str = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
+
+/// Accounts used by a token's creation but never by its trades, so their
+/// oldest transaction is the creation even when the token has a long history:
+/// the Mayhem state PDA (create_v2) and the Metaplex metadata PDA (create).
+pub fn creation_hints(mint: &Pubkey) -> Vec<String> {
+    let metaplex = pk(METAPLEX);
+    vec![
+        pda(&[b"mayhem-state", mint.as_ref()], &pk(MAYHEM)).to_string(),
+        pda(&[b"metadata", metaplex.as_ref(), mint.as_ref()], &metaplex).to_string(),
+    ]
+}
+
 pub fn config_address() -> Pubkey {
     pda(&[b"config"], &launchproof::ID)
 }

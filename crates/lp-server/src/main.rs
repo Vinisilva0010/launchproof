@@ -93,7 +93,7 @@ impl IntoResponse for ApiError {
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
         // Details go to the server log only.
-        eprintln!("internal error: {e:#}");
+        eprintln!("internal error: {}", lp_investigate::redact(&format!("{e:#}")));
         Self(StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
     }
 }
@@ -144,8 +144,9 @@ async fn report_json(state: &AppState, network_name: &str, rpc: Arc<RpcClient>, 
     }
 
     let curve = lp_tx::bonding_curve(&mint).to_string();
+    let hints = lp_tx::creation_hints(&mint);
     let mint_str = key.clone();
-    let report = tokio::task::spawn_blocking(move || lp_investigate::investigate(&rpc, &mint_str, &curve)).await??;
+    let report = tokio::task::spawn_blocking(move || lp_investigate::investigate(&rpc, &mint_str, &curve, &hints)).await??;
     let value = serde_json::to_value(&report)?;
     sqlx::query(
         "INSERT INTO reports (network, mint, report, created_at) VALUES ($1, $2, $3, now()) \
@@ -176,7 +177,11 @@ async fn investigate(
         _ => return Err(ApiError::bad_request("network must be devnet or mainnet")),
     };
     let mint = parse_pubkey(&mint, "mint")?;
-    let mut value = report_json(&state, &network_name, rpc, mint).await?;
+    let mut value = report_json(&state, &network_name, rpc, mint).await.map_err(|e| {
+        let reason = lp_investigate::redact(&format!("{e:#}"));
+        eprintln!("investigation failed: {reason}");
+        ApiError(StatusCode::BAD_GATEWAY, format!("investigation failed: {reason}"))
+    })?;
     let report: lp_investigate::Report = serde_json::from_value(value.clone()).map_err(anyhow::Error::from)?;
     value["findings"] = serde_json::to_value(report.explain()).map_err(anyhow::Error::from)?;
     Ok(Json(value))

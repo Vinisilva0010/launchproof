@@ -6,7 +6,7 @@
 //! attestation. Every number comes from on-chain data listed in the evidence.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Result};
 use lp_attest::{flags, Attestation, MAX_BPS};
@@ -33,6 +33,12 @@ pub const CREATOR_SCAN: usize = 100;
 pub const MAX_PRIOR_CHECK: usize = 50;
 /// A launch with no activity for this long counts as dead.
 pub const DEAD_AFTER_SECS: i64 = 24 * 3600;
+/// Launch transactions fetched at most.
+pub const EARLY_TX_LIMIT: usize = 200;
+/// Largest launch buyers whose funding is traced.
+pub const MAX_FUNDING_CHECKS: usize = 40;
+/// Attempts for an RPC call that hits a rate limit or timeout.
+const RPC_ATTEMPTS: u32 = 5;
 
 const PAGE: usize = 1000;
 const PUMP: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
@@ -107,8 +113,8 @@ impl Report {
         Ok(Attestation {
             network,
             mint,
-            linked_initial_bps: self.linked_initial_bps,
-            linked_now_bps: self.linked_now_bps,
+            linked_initial_bps: if launch_unanalyzed(&self.partial_reasons) { MAX_BPS } else { self.linked_initial_bps },
+            linked_now_bps: if launch_unanalyzed(&self.partial_reasons) { MAX_BPS } else { self.linked_now_bps },
             creator_prior: clamp(self.creator_prior_launches.len()),
             creator_dead: clamp(self.creator_dead_launches.len()),
             flags: self.flags(),
@@ -217,9 +223,31 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    /// RPC call with retries and growing waits on rate limits and timeouts.
     fn call(&self, request: RpcRequest, params: Value) -> Result<Value> {
         let label = format!("{request:?}");
-        self.rpc.send::<Value>(request, params).map_err(|e| anyhow!("{label} failed: {e}"))
+        let mut wait = Duration::from_millis(500);
+        let mut attempt = 1;
+        loop {
+            match self.rpc.send::<Value>(request, params.clone()) {
+                Ok(value) => return Ok(value),
+                Err(e) => {
+                    let text = e.to_string();
+                    let retry = text.contains("429") || text.contains("Too Many Requests") || text.contains("timed out");
+                    if !retry || attempt == RPC_ATTEMPTS {
+                        bail!("{label} failed: {}", redact(&text));
+                    }
+                    std::thread::sleep(wait);
+                    wait *= 2;
+                    attempt += 1;
+                }
+            }
+        }
+    }
+
+    /// Creator of `mint` when `tx` contains its Pump.fun create instruction.
+    fn creator_in(&self, tx: &Value, mint: &str) -> Option<String> {
+        all_instructions(tx).into_iter().find_map(|ix| self.pump_create(ix).filter(|(m, _)| m == mint).map(|(_, user)| user))
     }
 
     fn signatures(&self, address: &str, limit: usize, before: Option<&str>) -> Result<Vec<Value>> {
@@ -230,22 +258,19 @@ impl Ctx<'_> {
         Ok(self.call(RpcRequest::GetSignaturesForAddress, json!([address, cfg]))?.as_array().cloned().unwrap_or_default())
     }
 
-    /// Full history, newest first, capped at `max_pages`.
-    fn history(&mut self, address: &str, max_pages: usize) -> Result<Vec<Value>> {
+    /// History newest first, capped at `max_pages`; the flag says whether it is complete.
+    fn history(&mut self, address: &str, max_pages: usize) -> Result<(Vec<Value>, bool)> {
         let mut all = Vec::new();
-        for page in 0..max_pages {
+        for _ in 0..max_pages {
             let before = all.last().and_then(|s: &Value| s["signature"].as_str()).map(str::to_string);
             let batch = self.signatures(address, PAGE, before.as_deref())?;
             let full = batch.len() == PAGE;
             all.extend(batch);
             if !full {
-                return Ok(all);
-            }
-            if page + 1 == max_pages {
-                self.partial.insert(format!("history of {address} exceeds {} transactions", max_pages * PAGE));
+                return Ok((all, true));
             }
         }
-        Ok(all)
+        Ok((all, false))
     }
 
     fn transaction(&self, signature: &str) -> Result<Value> {
@@ -330,41 +355,78 @@ impl Ctx<'_> {
 }
 
 /// Investigates a Pump.fun launch. `bonding_curve` is the PDA
-/// ["bonding-curve", mint] of the Pump.fun program.
-pub fn investigate(rpc: &RpcClient, mint: &str, bonding_curve: &str) -> Result<Report> {
+/// ["bonding-curve", mint]; `creation_hints` are accounts only the creation
+/// touches (see lp_tx::creation_hints), used to find it in one lookup.
+pub fn investigate(rpc: &RpcClient, mint: &str, bonding_curve: &str, creation_hints: &[String]) -> Result<Report> {
     let mut ctx = Ctx { rpc, discs: discriminators()?, funding_cache: HashMap::new(), partial: BTreeSet::new() };
 
-    // 1. Creation: the oldest transaction of the bonding curve.
-    let curve_history = ctx.history(bonding_curve, CURVE_MAX_PAGES)?;
-    let oldest = curve_history.last().and_then(|s| s["signature"].as_str()).ok_or_else(|| anyhow!("no history for bonding curve"))?;
-    let creation_tx = ctx.transaction(oldest)?;
-    let creation_slot = creation_tx["slot"].as_u64().ok_or_else(|| anyhow!("creation slot missing"))?;
-    let creator = all_instructions(&creation_tx)
-        .into_iter()
-        .find_map(|ix| ctx.pump_create(ix).filter(|(m, _)| m == mint).map(|(_, user)| user))
-        .ok_or_else(|| anyhow!("oldest reachable transaction is not the creation; history too long to analyze"))?;
-    let creation_signature = oldest.to_string();
-
-    // 2. Early buys: positive token changes in the first slots, excluding the curve itself.
-    let mut early_buys = Vec::new();
-    for s in curve_history.iter().rev() {
-        let slot = s["slot"].as_u64().unwrap_or(u64::MAX);
-        if slot > creation_slot + EARLY_SLOT_WINDOW {
-            break;
-        }
-        let Some(sig) = s["signature"].as_str() else { continue };
-        if !s["err"].is_null() {
+    // 1. Creation: first from accounts only the creation touches, then from the curve history.
+    let mut creation: Option<(String, u64, String)> = None;
+    for hint in creation_hints {
+        let sigs = ctx.signatures(hint, PAGE, None)?;
+        if sigs.is_empty() || sigs.len() >= PAGE {
             continue;
         }
-        let tx = ctx.transaction(sig)?;
-        for (owner, delta) in token_deltas(&tx, mint) {
-            if delta > 0 && owner != bonding_curve {
-                early_buys.push(EarlyBuy { wallet: owner, tokens: u64::try_from(delta)?, signature: sig.to_string(), slot });
+        if let Some(s) = sigs.iter().rev().find(|s| s["err"].is_null()) {
+            if let Some(sig) = s["signature"].as_str() {
+                let tx = ctx.transaction(sig)?;
+                if let Some(creator) = ctx.creator_in(&tx, mint) {
+                    creation = Some((sig.to_string(), tx["slot"].as_u64().unwrap_or(0), creator));
+                    break;
+                }
             }
         }
     }
+    let (curve_history, curve_complete) = ctx.history(bonding_curve, CURVE_MAX_PAGES)?;
+    if creation.is_none() && curve_complete {
+        if let Some(sig) = curve_history.last().and_then(|s| s["signature"].as_str()) {
+            let tx = ctx.transaction(sig)?;
+            if let Some(creator) = ctx.creator_in(&tx, mint) {
+                creation = Some((sig.to_string(), tx["slot"].as_u64().unwrap_or(0), creator));
+            }
+        }
+    }
+    let (creation_signature, creation_slot, creator) = match creation {
+        Some(found) => found,
+        None if curve_history.is_empty() => {
+            bail!("this token was not launched on the Pump.fun bonding curve (its bonding curve account has no history), so there is no launch to investigate")
+        }
+        None => bail!("the Pump.fun creation transaction of this token was not found"),
+    };
 
-    // 3. Funding links to the creator.
+    // 2. Early buys: positive token changes in the first slots, excluding the curve itself.
+    let mut early_buys = Vec::new();
+    if curve_complete {
+        let mut fetched = 0;
+        for s in curve_history.iter().rev() {
+            let slot = s["slot"].as_u64().unwrap_or(u64::MAX);
+            if slot > creation_slot + EARLY_SLOT_WINDOW {
+                break;
+            }
+            let Some(sig) = s["signature"].as_str() else { continue };
+            if !s["err"].is_null() {
+                continue;
+            }
+            if fetched == EARLY_TX_LIMIT {
+                ctx.partial.insert(format!("only the first {EARLY_TX_LIMIT} launch transactions were analyzed"));
+                break;
+            }
+            fetched += 1;
+            let tx = ctx.transaction(sig)?;
+            for (owner, delta) in token_deltas(&tx, mint) {
+                if delta > 0 && owner != bonding_curve {
+                    early_buys.push(EarlyBuy { wallet: owner, tokens: u64::try_from(delta)?, signature: sig.to_string(), slot });
+                }
+            }
+        }
+    } else {
+        ctx.partial.insert(format!(
+            "token history is longer than {} transactions; launch buyers were not analyzed",
+            CURVE_MAX_PAGES * PAGE
+        ));
+    }
+
+    // 3. Funding links to the creator, for the largest launch buyers.
     let creator_path = ctx.funding_path(&creator)?;
     let mut creator_funders = BTreeSet::new();
     for edge in &creator_path {
@@ -372,9 +434,18 @@ pub fn investigate(rpc: &RpcClient, mint: &str, bonding_curve: &str) -> Result<R
             creator_funders.insert(edge.from.clone());
         }
     }
-    let buyers: BTreeSet<String> = early_buys.iter().map(|b| b.wallet.clone()).collect();
+    let mut totals: BTreeMap<String, u64> = BTreeMap::new();
+    for b in early_buys.iter().filter(|b| b.wallet != creator) {
+        *totals.entry(b.wallet.clone()).or_default() += b.tokens;
+    }
+    let mut buyers: Vec<(String, u64)> = totals.into_iter().collect();
+    buyers.sort_by(|a, b| b.1.cmp(&a.1));
+    if buyers.len() > MAX_FUNDING_CHECKS {
+        ctx.partial.insert(format!("funding was checked for the {MAX_FUNDING_CHECKS} largest of {} launch buyers", buyers.len()));
+        buyers.truncate(MAX_FUNDING_CHECKS);
+    }
     let mut linked_wallets = vec![LinkedWallet { wallet: creator.clone(), funding_path: vec![] }];
-    for buyer in buyers.iter().filter(|b| **b != creator) {
+    for (buyer, _) in &buyers {
         let path = ctx.funding_path(buyer)?;
         let mut linked = path.iter().any(|e| e.from == creator);
         for edge in &path {
@@ -477,6 +548,24 @@ pub fn investigate(rpc: &RpcClient, mint: &str, bonding_curve: &str) -> Result<R
     })
 }
 
+/// Removes API keys from error text before it is logged or returned.
+pub fn redact(text: &str) -> String {
+    let mut out = text.to_string();
+    for marker in ["api-key=", "api_key="] {
+        let mut from = 0;
+        while let Some(i) = out[from..].find(marker) {
+            let start = from + i + marker.len();
+            let end = out[start..]
+                .find(|c: char| c == '&' || c == ')' || c == '"' || c.is_whitespace())
+                .map(|j| start + j)
+                .unwrap_or(out.len());
+            out.replace_range(start..end, "REDACTED");
+            from = start + "REDACTED".len();
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,8 +652,8 @@ pub fn attestation_from_report_json(value: &Value, network: u8, issued_at: i64) 
     Ok(Attestation {
         network,
         mint,
-        linked_initial_bps: c.linked_initial_bps,
-        linked_now_bps: c.linked_now_bps,
+        linked_initial_bps: if launch_unanalyzed(&c.partial_reasons) { MAX_BPS } else { c.linked_initial_bps },
+        linked_now_bps: if launch_unanalyzed(&c.partial_reasons) { MAX_BPS } else { c.linked_now_bps },
         creator_prior: clamp(c.creator_prior_launches.len()),
         creator_dead: clamp(c.creator_dead_launches.len()),
         flags: f,
@@ -642,7 +731,14 @@ impl Report {
         }
 
         let others: Vec<&LinkedWallet> = self.linked_wallets.iter().filter(|l| l.wallet != self.creator).collect();
-        if others.is_empty() {
+        if others.is_empty() && launch_unanalyzed(&self.partial_reasons) {
+            out.push(finding(
+                Level::Danger,
+                "The launch could not be analyzed because this token has too many transactions, so who bought at launch is unknown. Attestations treat this as the worst case.".to_string(),
+                vec![],
+                vec![],
+            ));
+        } else if others.is_empty() {
             out.push(finding(
                 Level::Info,
                 "No wallet that bought at launch was funded by the creator or by the creator's funding source.".to_string(),
@@ -790,5 +886,51 @@ mod explain_tests {
         let findings = report(vec![creator], vec![], 0).explain();
         assert!(findings.iter().any(|f| f.text.starts_with("No wallet that bought at launch")));
         assert!(findings.iter().all(|f| f.level != Level::Danger));
+    }
+}
+
+#[cfg(test)]
+mod redact_tests {
+    use super::redact;
+
+    #[test]
+    fn removes_api_keys() {
+        let text = "error sending request for url (https://mainnet.helius-rpc.com/?api-key=abc-123&x=1) and api-key=zzz";
+        let out = redact(text);
+        assert!(!out.contains("abc-123") && !out.contains("zzz"));
+        assert!(out.contains("api-key=REDACTED&x=1"));
+    }
+}
+
+/// Partial-analysis text used when the launch is beyond the reachable history.
+const LAUNCH_NOT_ANALYZED: &str = "launch buyers were not analyzed";
+
+/// True when launch buyers could not be read. Unknown is never reported as
+/// clean: attestations then carry the worst case so the guard blocks purchases.
+pub fn launch_unanalyzed(partial_reasons: &[String]) -> bool {
+    partial_reasons.iter().any(|r| r.contains(LAUNCH_NOT_ANALYZED))
+}
+
+#[cfg(test)]
+mod unanalyzed_tests {
+    use super::*;
+
+    #[test]
+    fn unanalyzed_launch_is_worst_case_in_attestation() {
+        let report = json!({
+            "mint": "11111111111111111111111111111111",
+            "linked_initial_bps": 0,
+            "linked_now_bps": 0,
+            "creator_prior_launches": [],
+            "creator_dead_launches": [],
+            "mint_authority_active": false,
+            "freeze_authority_active": false,
+            "partial_reasons": ["token history is longer than 20000 transactions; launch buyers were not analyzed"],
+            "evidence_hash": "00".repeat(32),
+        });
+        let att = attestation_from_report_json(&report, lp_attest::network::MAINNET, 1).unwrap();
+        assert_eq!(att.linked_initial_bps, MAX_BPS);
+        assert_eq!(att.linked_now_bps, MAX_BPS);
+        assert!(att.flags & flags::ANALYSIS_PARTIAL != 0);
     }
 }

@@ -280,7 +280,7 @@ fn resolve_mint(mint: Option<String>, demo: Option<LaunchKind>) -> Result<Pubkey
 
 fn run_investigation(rpc: &RpcClient, mint: &Pubkey) -> Result<lp_investigate::Report> {
     let curve = pda(&[b"bonding-curve", mint.as_ref()], &pk(PUMP));
-    let report = lp_investigate::investigate(rpc, &mint.to_string(), &curve.to_string())?;
+    let report = lp_investigate::investigate(rpc, &mint.to_string(), &curve.to_string(), &lp_tx::creation_hints(mint))?;
     eprintln!(
         "investigation: linked wallets {}, bought at launch {:.2}%, holding now {:.2}%, earlier launches {} ({} dead), partial: {:?}",
         report.linked_wallets.len(),
