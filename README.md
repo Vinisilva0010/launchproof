@@ -4,6 +4,12 @@ LaunchProof checks who really bought a Pump.fun token at launch and lets a buyer
 
 Built for the MLH Solana Hackathon (November 2026). Everything runs on devnet; the investigator also works on mainnet tokens.
 
+## Live
+
+- Web client: https://launchproof-1.onrender.com
+- API: https://launchproof-vd4a.onrender.com/health
+- Try it: open the web client and click "Demo: bundled launch (devnet)", or paste any Pump.fun mainnet token address.
+
 ## The problem
 
 The most common Pump.fun scam is not a malicious contract. The creator funds several wallets, those wallets buy most of the supply in the first seconds, and they sell when other people arrive. This leaves a public trail: the same SOL source, buys in the same slots as the creation.
