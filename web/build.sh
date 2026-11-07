@@ -12,4 +12,5 @@ npx esbuild src/app.ts --bundle --minify --format=esm --target=es2020 --outfile=
   --define:__DEMO_CLEAN__="\"$CLEAN\"" \
   --define:__DEMO_BUNDLED__="\"$BUNDLED\""
 cp index.html style.css dist/
+[ -d assets ] && cp -r assets dist/
 echo "built web/dist for API $API_URL"

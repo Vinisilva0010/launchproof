@@ -4,74 +4,193 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LaunchProof</title>
-  <meta name="description" content="Checks who really bought a Pump.fun token at launch, and lets you buy only if the token stays within your limits.">
+  <meta name="description" content="Checks who really bought a Pump.fun token at launch, and lets you buy only if the token stays within your limits, checked on-chain inside the purchase.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800;900&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>
-    <h1>LaunchProof</h1>
-    <p class="lead">Checks who really bought a Pump.fun token at launch, and lets you buy only if the token stays within your limits. The check runs inside the purchase transaction on Solana, so a failed check cancels the purchase.</p>
+  <nav class="nav" aria-label="Main">
+    <a class="brand" href="#top"><span class="brand-mark">LP</span><span>LaunchProof</span></a>
+    <div class="nav-links">
+      <a href="#check">Check a token</a>
+      <a href="#how">How it works</a>
+      <a href="#agents">AI agents</a>
+      <a href="https://github.com/Vinisilva0010/launchproof" target="_blank" rel="noopener noreferrer">GitHub</a>
+    </div>
+    <span class="api-status" id="api-status" title="API status"><i></i><span>API</span></span>
+  </nav>
+
+  <header id="top" class="hero">
+    <div class="hero-text reveal">
+      <p class="tag">Pump.fun launch checker on Solana</p>
+      <h1>Who really bought this token at launch?</h1>
+      <p class="lead">Paste a Pump.fun token. LaunchProof finds the creator, the wallets that bought in the first minute, and where their SOL came from. Then you can buy only if the token stays inside your limits, checked by a Solana program inside the purchase.</p>
+      <div class="row">
+        <a class="btn btn-yellow" href="#check">Check a token</a>
+        <a class="btn btn-white" href="#how">How it works</a>
+      </div>
+    </div>
+    <figure class="mascot mascot-hero reveal">
+      <img src="assets/mascot/07-waving.png" alt="LaunchProof guide waving" width="420" height="420">
+      <figcaption class="bubble">Hi. I check a launch before you put money in it.</figcaption>
+    </figure>
   </header>
 
+  <div class="ticker" aria-hidden="true">
+    <div class="ticker-track">
+      <span>Creator found from the creation transaction</span><span>Launch buyers from the first 150 slots</span><span>SOL traced up to two hops</span><span>Signed Ed25519 attestation</span><span>Checked on-chain inside the purchase</span>
+      <span>Creator found from the creation transaction</span><span>Launch buyers from the first 150 slots</span><span>SOL traced up to two hops</span><span>Signed Ed25519 attestation</span><span>Checked on-chain inside the purchase</span>
+    </div>
+  </div>
+
   <main>
-    <section class="card">
-      <h2>1. Investigate a token</h2>
-      <form id="investigate-form">
-        <label for="mint">Token address (mint)</label>
-        <input id="mint" name="mint" autocomplete="off" spellcheck="false" required placeholder="Paste a Pump.fun token address">
-        <label for="network">Network</label>
-        <select id="network">
-          <option value="mainnet">Mainnet</option>
-          <option value="devnet">Devnet</option>
-        </select>
-        <div class="row">
-          <button type="submit">Investigate</button>
-          <button type="button" class="secondary" id="demo-clean">Demo: clean launch (devnet)</button>
-          <button type="button" class="secondary" id="demo-bundled">Demo: bundled launch (devnet)</button>
+    <section id="check" class="section">
+      <div class="check-layout">
+        <form id="investigate-form" class="card card-yellow reveal">
+          <h2>Check a token</h2>
+          <label for="mint">Token address (mint)</label>
+          <input id="mint" name="mint" autocomplete="off" spellcheck="false" required placeholder="Paste a Pump.fun token address">
+          <label for="network">Network</label>
+          <select id="network">
+            <option value="mainnet">Mainnet</option>
+            <option value="devnet">Devnet</option>
+          </select>
+          <div class="row">
+            <button type="submit" class="btn btn-coral">Investigate</button>
+            <button type="button" class="btn btn-white" id="demo-bundled">Example: bundled launch</button>
+            <button type="button" class="btn btn-white" id="demo-clean">Example: clean launch</button>
+          </div>
+        </form>
+        <figure class="mascot mascot-side reveal">
+          <img src="assets/mascot/03-pointing.png" alt="LaunchProof guide pointing at the form" width="320" height="320">
+          <figcaption class="bubble bubble-left">Paste the address here. New launches give the most complete answer.</figcaption>
+        </figure>
+      </div>
+
+      <div id="loading" class="loading card hidden" role="status" aria-live="polite">
+        <figure class="mascot mascot-loading"><img src="assets/mascot/05-worried.png" alt="LaunchProof guide waiting" width="220" height="220"></figure>
+        <div>
+          <p class="loading-title">Reading the token's history on Solana</p>
+          <div class="progress"><span></span></div>
+          <ol class="checklist">
+            <li>Finding the creation transaction and the real creator</li>
+            <li>Listing the wallets that bought in the first minute</li>
+            <li>Tracing where each wallet got its SOL</li>
+            <li>Checking the creator's earlier launches</li>
+          </ol>
+          <p class="hint">New tokens take a few seconds. Busy tokens can take up to a minute.</p>
         </div>
-      </form>
-      <p id="status" role="status"></p>
-    </section>
-
-    <section class="card hidden" id="result">
-      <h2>2. What we found</h2>
-      <div class="stats" id="stats"></div>
-      <ol class="findings" id="findings"></ol>
-    </section>
-
-    <section class="card hidden" id="buy">
-      <h2>3. Buy with the guard (devnet)</h2>
-      <p>Your wallet must be on Solana devnet. The purchase only happens if the token is within the limits below; otherwise the whole transaction is cancelled on-chain.</p>
-      <div class="row">
-        <button type="button" id="connect">Connect wallet</button>
-        <span id="wallet"></span>
       </div>
-      <div class="grid">
-        <label>Amount (SOL)<input id="sol" type="number" min="0.001" max="5" step="0.001" value="0.01"></label>
-        <label>Max bought at launch by the creator's network (%)<input id="max-initial" type="number" min="0" max="100" step="0.1" value="10"></label>
-        <label>Max still held by the creator's network (%)<input id="max-now" type="number" min="0" max="100" step="0.1" value="10"></label>
-        <label>Max dead earlier launches<input id="max-dead" type="number" min="0" max="100" step="1" value="1"></label>
+
+      <div id="error-box" class="card card-coral error-box hidden" role="alert">
+        <figure class="mascot mascot-small"><img src="assets/mascot/08-sitting.png" alt="LaunchProof guide sitting" width="180" height="180"></figure>
+        <p id="error-text"></p>
       </div>
-      <fieldset>
-        <legend>Refuse the token if</legend>
-        <label class="check"><input type="checkbox" id="deny-mint" checked> the mint authority is active</label>
-        <label class="check"><input type="checkbox" id="deny-freeze" checked> the freeze authority is active</label>
-        <label class="check"><input type="checkbox" id="deny-partial"> the analysis is partial</label>
-      </fieldset>
-      <p id="expected" class="expected"></p>
-      <button type="button" id="buy-button">Buy with guard</button>
-      <p id="buy-status" role="status"></p>
+
+      <div id="result" class="hidden">
+        <div id="verdict" class="verdict card">
+          <figure class="mascot mascot-verdict"><img id="verdict-img" src="" alt="LaunchProof guide reacting to the result" width="240" height="240"></figure>
+          <div>
+            <p class="verdict-label" id="verdict-label"></p>
+            <p class="verdict-text" id="verdict-text"></p>
+          </div>
+        </div>
+        <div class="stats" id="stats"></div>
+        <ol class="findings" id="findings"></ol>
+      </div>
     </section>
 
-    <section class="card">
-      <h2>How it works</h2>
-      <ol class="how">
-        <li><strong>Investigation.</strong> We read the token's history on Solana: who created it, which wallets bought in the first minute, and where each of those wallets got its SOL. Wallets funded by the creator count as the creator's network.</li>
-        <li><strong>Signed attestation.</strong> The numbers are signed by the LaunchProof key. The signed message also carries a hash of all the evidence, so anyone can check it.</li>
-        <li><strong>Check inside the purchase.</strong> The LaunchProof program on Solana verifies the signature and your limits in the same transaction as the purchase. If anything fails, Solana cancels the purchase.</li>
-      </ol>
+    <section id="buy" class="section hidden">
+      <div class="card card-white buy-card">
+        <div class="buy-head">
+          <div>
+            <h2>Buy with the guard</h2>
+            <p>Devnet. The purchase only happens if the token is inside your limits. If not, Solana cancels the whole transaction.</p>
+          </div>
+          <figure class="mascot mascot-small"><img id="buy-img" src="assets/mascot/01-hello.png" alt="LaunchProof guide" width="180" height="180"></figure>
+        </div>
+        <div class="row">
+          <button type="button" class="btn btn-yellow" id="connect">Connect wallet</button>
+          <span id="wallet" class="wallet"></span>
+        </div>
+        <div class="grid">
+          <label>Amount (SOL)<input id="sol" type="number" min="0.001" max="5" step="0.001" value="0.01"></label>
+          <label>Max bought at launch by the creator's network (%)<input id="max-initial" type="number" min="0" max="100" step="0.1" value="10"></label>
+          <label>Max still held by the creator's network (%)<input id="max-now" type="number" min="0" max="100" step="0.1" value="10"></label>
+          <label>Max dead earlier launches<input id="max-dead" type="number" min="0" max="100" step="1" value="1"></label>
+        </div>
+        <fieldset>
+          <legend>Refuse the token if</legend>
+          <label class="check"><input type="checkbox" id="deny-mint" checked> the mint authority is active</label>
+          <label class="check"><input type="checkbox" id="deny-freeze" checked> the freeze authority is active</label>
+          <label class="check"><input type="checkbox" id="deny-partial"> the analysis is partial</label>
+        </fieldset>
+        <p id="expected" class="expected"></p>
+        <button type="button" class="btn btn-coral" id="buy-button">Buy with guard</button>
+        <p id="buy-status" class="buy-status" role="status"></p>
+      </div>
+    </section>
+
+    <section id="how" class="section">
+      <div class="how-head reveal">
+        <figure class="mascot mascot-side"><img src="assets/mascot/02-talking.png" alt="LaunchProof guide explaining" width="300" height="300"></figure>
+        <div>
+          <h2>How it works</h2>
+          <p class="bubble bubble-left static">The usual scam: the creator sends SOL to fresh wallets, they buy most of the supply in the first seconds, and they sell when you arrive. Every step leaves a trace on Solana.</p>
+        </div>
+      </div>
+      <svg class="graph reveal" viewBox="0 0 600 220" role="img" aria-label="The creator sends SOL to five wallets that buy at launch">
+        <g class="edges">
+          <path d="M300 60 L90 170"/><path d="M300 60 L195 170"/><path d="M300 60 L300 170"/><path d="M300 60 L405 170"/><path d="M300 60 L510 170"/>
+        </g>
+        <g class="node creator"><rect x="230" y="25" width="140" height="56" rx="10"/><text x="300" y="60">Creator</text></g>
+        <g class="node"><rect x="45" y="150" width="90" height="44" rx="10"/><text x="90" y="178">Wallet</text></g>
+        <g class="node"><rect x="150" y="150" width="90" height="44" rx="10"/><text x="195" y="178">Wallet</text></g>
+        <g class="node"><rect x="255" y="150" width="90" height="44" rx="10"/><text x="300" y="178">Wallet</text></g>
+        <g class="node"><rect x="360" y="150" width="90" height="44" rx="10"/><text x="405" y="178">Wallet</text></g>
+        <g class="node"><rect x="465" y="150" width="90" height="44" rx="10"/><text x="510" y="178">Wallet</text></g>
+      </svg>
+      <div class="steps">
+        <article class="card card-yellow step reveal"><span class="step-n">1</span><h3>Investigate</h3><p>We read the token's history: the real creator, every wallet that bought in the first minute, and where each one got its SOL. Wallets funded by the creator count as the creator's network.</p></article>
+        <article class="card card-white step reveal"><span class="step-n">2</span><h3>Sign</h3><p>The numbers are signed by the LaunchProof key in a 97-byte message that also carries a hash of all the evidence, so anyone can check it.</p></article>
+        <article class="card card-coral step reveal"><span class="step-n">3</span><h3>Check inside the purchase</h3><p>Our Solana program verifies the signature and your limits in the same transaction as the buy. If anything fails, Solana cancels the purchase.</p></article>
+      </div>
+    </section>
+
+    <section id="agents" class="section">
+      <div class="card card-white agents reveal">
+        <div>
+          <h2>AI agents</h2>
+          <p>Agents connect through our MCP server. They investigate a token and buy with their own wallet, through the same guard. Even if an agent decides badly, it cannot buy a token outside its limits: the Solana program refuses the purchase.</p>
+          <a class="btn btn-yellow" href="https://github.com/Vinisilva0010/launchproof#ai-agents-mcp" target="_blank" rel="noopener noreferrer">MCP setup</a>
+        </div>
+        <figure class="mascot mascot-small"><img src="assets/mascot/01-hello.png" alt="LaunchProof guide smiling" width="200" height="200"></figure>
+      </div>
     </section>
   </main>
+
+  <footer class="footer">
+    <figure class="mascot mascot-footer"><img src="assets/mascot/08-sitting.png" alt="LaunchProof guide sitting on the footer" width="200" height="200"></figure>
+    <div class="footer-grid">
+      <div>
+        <p class="footer-title">LaunchProof</p>
+        <p>Open source, MIT license. Built for the MLH Solana Hackathon.</p>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/Vinisilva0010/launchproof" target="_blank" rel="noopener noreferrer">Source code</a>
+        <a href="https://explorer.solana.com/address/BjK5qpT8rzR1XLJKtX1MxmXBVD1NM3T19rFV6Vd1r89W?cluster=devnet" target="_blank" rel="noopener noreferrer">Program on devnet</a>
+        <a href="https://github.com/Vinisilva0010/launchproof/blob/main/SECURITY.md" target="_blank" rel="noopener noreferrer">Security</a>
+      </div>
+    </div>
+    <div class="ticker ticker-footer" aria-hidden="true">
+      <div class="ticker-track">
+        <span>Program BjK5qpT8rzR1XLJKtX1MxmXBVD1NM3T19rFV6Vd1r89W</span><span>Rust · Anchor · Solana</span><span>Unknown is never reported as clean</span>
+        <span>Program BjK5qpT8rzR1XLJKtX1MxmXBVD1NM3T19rFV6Vd1r89W</span><span>Rust · Anchor · Solana</span><span>Unknown is never reported as clean</span>
+      </div>
+    </div>
+  </footer>
+  <script type="module" src="app.js"></script>
 </body>
-<script type="module" src="app.js"></script>
 </html>
