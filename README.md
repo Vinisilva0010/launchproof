@@ -72,7 +72,7 @@ The same attestation code (`lp-attest`) runs inside the on-chain program and in 
 | 45..47 | share bought at launch by the creator's network, basis points |
 | 47..49 | share they still hold, basis points |
 | 49..51 | creator's earlier launches |
-| 51..53 | earlier launches with no activity for 24 hours |
+| 51..53 | earlier launches older than 24 hours whose bonding curve never completed |
 | 53..57 | flags: 1 mint authority active, 2 freeze authority active, 4 partial analysis |
 | 57..65 | issued at, unix seconds |
 | 65..97 | SHA-256 of the evidence JSON |

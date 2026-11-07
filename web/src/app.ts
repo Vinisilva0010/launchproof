@@ -80,7 +80,7 @@ function render() {
     stat(pct(report.linked_initial_bps), "bought at launch by the creator and linked wallets"),
     stat(pct(report.linked_now_bps), "still held by them now"),
     stat(String(report.creator_prior_launches.length), "earlier launches by the creator"),
-    stat(String(report.creator_dead_launches.length), "of those with no activity for 24 hours"),
+    stat(String(report.creator_dead_launches.length), "of those never completed their bonding curve"),
   );
   const list = byId("findings");
   list.replaceChildren();

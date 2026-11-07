@@ -10,6 +10,7 @@ publish = false
 anyhow = "1"
 bs58 = "0.5"
 lp-attest = { path = "../lp-attest" }
+base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

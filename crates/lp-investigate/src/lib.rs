@@ -31,8 +31,10 @@ pub const FUNDING_TX_SCAN: usize = 10;
 pub const CREATOR_SCAN: usize = 100;
 /// Earlier launches checked for activity.
 pub const MAX_PRIOR_CHECK: usize = 50;
-/// A launch with no activity for this long counts as dead.
+/// An earlier launch older than this whose bonding curve never completed counts as dead.
 pub const DEAD_AFTER_SECS: i64 = 24 * 3600;
+/// Earlier launches that make the creator a serial launcher (warning).
+pub const SERIAL_LAUNCHER: usize = 5;
 /// Launch transactions fetched at most.
 pub const EARLY_TX_LIMIT: usize = 200;
 /// Largest launch buyers whose funding is traced.
@@ -299,6 +301,20 @@ impl Ctx<'_> {
         Some((accounts.first()?.to_string(), accounts.get(user_index)?.to_string()))
     }
 
+    /// Bonding curve account of a Pump.fun create instruction (third account in create and create_v2).
+    fn create_curve(&self, ix: &Value) -> Option<String> {
+        self.pump_create(ix)?;
+        ix["accounts"].as_array()?.get(2)?.as_str().map(str::to_string)
+    }
+
+    /// Whether a bonding curve completed (graduated): byte 48 of the account data.
+    fn curve_complete(&self, curve: &str) -> Result<Option<bool>> {
+        let v = self.call(RpcRequest::GetAccountInfo, json!([curve, { "encoding": "base64", "commitment": "confirmed" }]))?;
+        let Some(b64) = v["value"]["data"][0].as_str() else { return Ok(None) };
+        let data = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)?;
+        Ok(data.get(48).map(|b| *b != 0))
+    }
+
     fn funding(&mut self, wallet: &str) -> Result<Funding> {
         if let Some(f) = self.funding_cache.get(wallet) {
             return Ok(f.clone());
@@ -480,7 +496,8 @@ pub fn investigate(rpc: &RpcClient, mint: &str, bonding_curve: &str, creation_hi
     if creator_sigs.len() >= CREATOR_SCAN {
         ctx.partial.insert(format!("creator has more than {CREATOR_SCAN} transactions; older launches not checked"));
     }
-    let mut prior = BTreeSet::new();
+    // mint -> (bonding curve, creation time)
+    let mut prior: BTreeMap<String, (String, i64)> = BTreeMap::new();
     for s in &creator_sigs {
         let slot = s["slot"].as_u64().unwrap_or(u64::MAX);
         let Some(sig) = s["signature"].as_str() else { continue };
@@ -488,27 +505,27 @@ pub fn investigate(rpc: &RpcClient, mint: &str, bonding_curve: &str, creation_hi
             continue;
         }
         let tx = ctx.transaction(sig)?;
+        let created = tx["blockTime"].as_i64().unwrap_or(0);
         for ix in all_instructions(&tx) {
-            if let Some((m, user)) = ctx.pump_create(ix) {
+            if let (Some((m, user)), Some(curve)) = (ctx.pump_create(ix), ctx.create_curve(ix)) {
                 if user == creator && m != mint {
-                    prior.insert(m);
+                    prior.insert(m, (curve, created));
                 }
             }
         }
     }
     if prior.len() > MAX_PRIOR_CHECK {
-        ctx.partial.insert(format!("only {MAX_PRIOR_CHECK} earlier launches checked for activity"));
+        ctx.partial.insert(format!("only {MAX_PRIOR_CHECK} earlier launches checked for completion"));
     }
+    // Dead: launched more than DEAD_AFTER_SECS ago and the bonding curve never completed.
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
     let mut dead = Vec::new();
-    for m in prior.iter().take(MAX_PRIOR_CHECK) {
-        let last = ctx.signatures(m, 1, None)?;
-        let last_time = last.first().and_then(|s| s["blockTime"].as_i64()).unwrap_or(0);
-        if now - last_time > DEAD_AFTER_SECS {
+    for (m, (curve, created)) in prior.iter().take(MAX_PRIOR_CHECK) {
+        if now - created > DEAD_AFTER_SECS && ctx.curve_complete(curve)? == Some(false) {
             dead.push(m.clone());
         }
     }
-    let creator_prior_launches: Vec<String> = prior.into_iter().collect();
+    let creator_prior_launches: Vec<String> = prior.into_keys().collect();
 
     // 6. Evidence and its hash.
     let evidence = json!({
@@ -805,7 +822,7 @@ impl Report {
             let dead = self.creator_dead_launches.len();
             let level = if dead >= DANGER_DEAD_LAUNCHES {
                 Level::Danger
-            } else if dead == 1 {
+            } else if dead == 1 || self.creator_prior_launches.len() >= SERIAL_LAUNCHER {
                 Level::Warning
             } else {
                 Level::Info
@@ -813,7 +830,7 @@ impl Report {
             out.push(finding(
                 level,
                 format!(
-                    "The creator launched {} other tokens before this one; {} of them have had no activity for 24 hours.",
+                    "The creator launched {} other tokens before this one; {} of them are more than 24 hours old and never completed their bonding curve.",
                     self.creator_prior_launches.len(),
                     dead
                 ),

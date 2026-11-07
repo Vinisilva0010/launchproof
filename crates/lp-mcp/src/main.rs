@@ -127,7 +127,7 @@ fn summary(report: &Value, network: &str) -> String {
         format!("Mint: {} ({network})", report["mint"].as_str().unwrap_or("?")),
         format!("Bought at launch by the creator and linked wallets: {}", pct(num("linked_initial_bps"))),
         format!("Still held by them now: {}", pct(num("linked_now_bps"))),
-        format!("Earlier launches by the creator: {} ({} with no activity for 24 hours)", count("creator_prior_launches"), count("creator_dead_launches")),
+        format!("Earlier launches by the creator: {} ({} never completed their bonding curve)", count("creator_prior_launches"), count("creator_dead_launches")),
         format!("Mint authority active: {}", report["mint_authority_active"].as_bool().unwrap_or(false)),
         format!("Freeze authority active: {}", report["freeze_authority_active"].as_bool().unwrap_or(false)),
         "Findings:".to_string(),
