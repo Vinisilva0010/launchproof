@@ -9,6 +9,7 @@ Built for the MLH Solana Hackathon (November 2026). Everything runs on devnet; t
 - Web client: https://launchproof-1.onrender.com
 - API: https://launchproof-vd4a.onrender.com/health
 - Try it: open the web client and click "Demo: bundled launch (devnet)", or paste any Pump.fun mainnet token address.
+- https://www.youtube.com/watch?v=wjaAJBTsuKk
 
 ## The problem
 
